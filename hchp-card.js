@@ -246,7 +246,8 @@ class HCHPCard extends HTMLElement {
     const ps   = this._hass?.states[this._config.power_entity];
     const pw   = ps ? parseFloat(ps.state) : NaN;
     const col  = pColor(pw, this._config.thresholds);
-    const pPct = isNaN(pw) ? 0 : Math.min(100, pw / (this._config.thresholds.high * 1.5) * 100);
+    // Échelle racine carrée : visuellement plus lisible sur faibles conso, 100% = seuil haut
+    const pPct = isNaN(pw) ? 0 : Math.min(100, Math.sqrt(Math.max(0, pw) / this._config.thresholds.high) * 100);
     const cph  = isNaN(pw) ? '--' : `${(pw/1000*price).toFixed(4)} €/h`;
 
     const time = now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
