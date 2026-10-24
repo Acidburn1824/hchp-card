@@ -59,12 +59,21 @@ function currentlyHC(date, schedules) {
   const now = date.getHours()*60 + date.getMinutes();
   return sched.hc.some(({start,end}) => {
     const s = toMin(start), e = toMin(end);
+    if (e >= 1439) return now >= s; // 23:59 ou 24:00 = jusqu'à minuit inclus
     return s < e ? (now >= s && now < e) : (now >= s || now < e);
   });
 }
 
+function isAllDayHC(schedules, dayType) {
+  const sched = schedules[dayType] || schedules['weekday'] || {};
+  const slots = sched.hc || [];
+  // 24:00 (1440) ou 23:59 (1439) = toute la journée
+  return slots.some(({start, end}) => toMin(start) === 0 && (toMin(end) >= 1439));
+}
+
 function nextSwitch(date, schedules) {
   const type = getDayType(date);
+  if (isAllDayHC(schedules, type)) return null;
   const sched = schedules[type] || schedules['weekday'] || {};
   if (!sched.hc?.length) return null;
   const now = date.getHours()*60 + date.getMinutes();
@@ -88,11 +97,11 @@ const DEFAULT_CONFIG = {
   name: 'Tarif HC/HP',
   power_entity: '',
   energy_entity: '',
-  prices: { hc: 0.1296, hp: 0.1609 },
+  prices: { hc: 0.1792, hp: 0.2403 },
   schedules: {
     weekday:   { hc: [{ start: '22:30', end: '06:30' }] },
-    wednesday: { hc: [{ start: '22:30', end: '06:30' }] },
-    weekend:   { hc: [{ start: '00:00', end: '07:00' }] },
+    wednesday: { hc: [{ start: '00:00', end: '24:00' }] },
+    weekend:   { hc: [{ start: '00:00', end: '24:00' }] },
     holiday:   { hc: [{ start: '00:00', end: '24:00' }] },
   },
   thresholds: { low: 1000, medium: 3000, high: 6000 },
@@ -309,17 +318,23 @@ class HCHPCard extends HTMLElement {
         <div class="section">
           <div class="section-title">Plages HC · ${DAY_LABELS[dt]}</div>
           <ul class="sched-list">
-            ${slots.map(({start,end})=>`
+            ${isAllDayHC(this._config.schedules, dt) ? `
+              <li class="sched-item">
+                <div class="dot dot-hc"></div>
+                <span>Toute la journée</span>
+                <span class="sched-side">HC · ${this._config.prices.hc.toFixed(4)} €</span>
+              </li>` : `
+              ${slots.map(({start,end})=>`
               <li class="sched-item">
                 <div class="dot dot-hc"></div>
                 <span>${start} → ${end}</span>
                 <span class="sched-side">HC · ${this._config.prices.hc.toFixed(4)} €</span>
               </li>`).join('')}
-            <li class="sched-item">
-              <div class="dot dot-hp"></div>
-              <span>Reste de la journée</span>
-              <span class="sched-side">HP · ${this._config.prices.hp.toFixed(4)} €</span>
-            </li>
+              <li class="sched-item">
+                <div class="dot dot-hp"></div>
+                <span>Reste de la journée</span>
+                <span class="sched-side">HP · ${this._config.prices.hp.toFixed(4)} €</span>
+              </li>`}
           </ul>
         </div>
 
@@ -352,6 +367,8 @@ const EDITOR_CSS = `
            background: none; border: none; padding: 0; margin-top: 2px; }
   .day-block { margin-bottom: 12px; }
   .day-label { font-size: .8rem; font-weight: 600; margin-bottom: 6px; }
+  .allday-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: .8rem; cursor: pointer; }
+  .allday-row input[type=checkbox] { width: auto; margin: 0; cursor: pointer; accent-color: var(--primary-color, #007bff); }
   .note  { font-size: .72rem; opacity: .5; margin-top: 4px; }
 `;
 
@@ -381,6 +398,15 @@ class HCHPCardEditor extends HTMLElement {
     obj[keys[keys.length - 1]] = value;
     this._fire();
     this._render();
+  }
+
+  _setAllDay(dayType, checked) {
+    if (checked) {
+      this._config.schedules[dayType].hc = [{ start: '00:00', end: '23:59' }];
+    } else {
+      this._config.schedules[dayType].hc = [{ start: '22:30', end: '06:30' }];
+    }
+    this._fire(); this._render();
   }
 
   _addSlot(dayType) {
@@ -435,20 +461,29 @@ class HCHPCardEditor extends HTMLElement {
 
       <h3>Plages Heures Creuses par type de jour</h3>
 
-      ${['weekday','wednesday','weekend','holiday'].map(dt => `
+      ${['weekday','wednesday','weekend','holiday'].map(dt => {
+        const slots = sched[dt]?.hc || [];
+        const allDay = slots.length === 1 && slots[0].start === '00:00' && (slots[0].end === '23:59' || slots[0].end === '24:00');
+        return `
         <div class="day-block">
           <div class="day-label">${DAY_LABELS[dt]}</div>
-          ${(sched[dt]?.hc || []).map((slot, i) => `
-            <div class="slot">
-              <input class="slot-start" data-type="${dt}" data-idx="${i}" type="time" value="${slot.start}">
-              <span style="opacity:.4">→</span>
-              <input class="slot-end" data-type="${dt}" data-idx="${i}" type="time" value="${slot.end}">
-              <button class="rm" data-rm="${dt}" data-idx="${i}" title="Supprimer">✕</button>
-            </div>
-          `).join('')}
-          <button class="add" data-add="${dt}">+ Ajouter une plage HC</button>
-        </div>
-      `).join('')}
+          <label class="allday-row">
+            <input type="checkbox" class="allday-cb" data-type="${dt}" ${allDay ? 'checked' : ''}>
+            Toute la journée (HC flat rate)
+          </label>
+          ${!allDay ? `
+            ${slots.map((slot, i) => `
+              <div class="slot">
+                <input class="slot-start" data-type="${dt}" data-idx="${i}" type="time" value="${slot.start}">
+                <span style="opacity:.4">→</span>
+                <input class="slot-end" data-type="${dt}" data-idx="${i}" type="time" value="${slot.end}">
+                <button class="rm" data-rm="${dt}" data-idx="${i}" title="Supprimer">✕</button>
+              </div>
+            `).join('')}
+            <button class="add" data-add="${dt}">+ Ajouter une plage HC</button>
+          ` : ''}
+        </div>`;
+      }).join('')}
 
       <h3>Seuils puissance (couleur de la barre)</h3>
       <div class="two">
@@ -495,6 +530,9 @@ class HCHPCardEditor extends HTMLElement {
     });
     this.shadowRoot.querySelectorAll('[data-add]').forEach(btn => {
       btn.addEventListener('click', e => this._addSlot(e.target.dataset.add));
+    });
+    this.shadowRoot.querySelectorAll('.allday-cb').forEach(cb => {
+      cb.addEventListener('change', e => this._setAllDay(e.target.dataset.type, e.target.checked));
     });
   }
 }
